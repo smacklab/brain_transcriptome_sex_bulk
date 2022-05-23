@@ -41,7 +41,14 @@ The following files are expected:
 
 * An animal social metrics file should be placed in `data/social_metrics.csv`
 
-* Results for an analysis of sex-biased gene expression in humans (GTEx v8) should be placed in ```data/gtex_mashr_results_sex.rds```
+* Results for an analysis of sex-biased gene expression in humans (GTEx v8) should be placed in `data/gtex_mashr_results_sex.rds`
+
+* A file containing ASD up- and down-regulated genes (from Haney et al. 2021) should be placed in `data/Haney2021.csv`
+
+* An file containing LOF scores (from Fadista et al. 2017) should be placed in `data/LoFtools.csv`
+
+* An file containing X gene importance scores (from Oliva et al. 2020) should be placed in `data/Oliva_data.csv`
+
 
 # Pipeline
 
