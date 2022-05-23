@@ -1,0 +1,253 @@
+#!/usr/bin/env Rscript
+
+library(biomaRt)
+library(parallel)
+
+mash.hsap = readRDS('data/gtex_mashr_results_sex.rds')
+
+mmul = useEnsembl(biomart = 'ENSEMBL_MART_ENSEMBL',
+                    dataset='mmulatta_gene_ensembl')
+mmul.hsap = getBM(attributes=c('ensembl_gene_id','chromosome_name','external_gene_name','hsapiens_homolog_ensembl_gene','hsapiens_homolog_associated_gene_name','hsapiens_homolog_orthology_type','hsapiens_homolog_chromosome'),mart = mmul)
+mmul.hsap.o2o = subset(mmul.hsap,hsapiens_homolog_orthology_type == 'ortholog_one2one')
+
+mash.mmul = readRDS('checkpoints/mashr_results.rds')
+
+get_pm=function(x){x$result$PosteriorMean}
+get_lfsr=function(x){x$result$lfsr}
+get_psd=function(x){x$result$PosteriorSD}
+
+mmul.beta = get_pm(mash.mmul)
+mmul.lfsr = get_lfsr(mash.mmul)
+mmul.berr = get_psd(mash.mmul)
+mmul.sbet = mmul.beta / mmul.berr
+
+hsap.beta = get_pm(mash.hsap)
+hsap.lfsr = get_lfsr(mash.hsap)
+hsap.berr = get_psd(mash.hsap)
+hsap.sbet = hsap.beta / hsap.berr
+
+ortho.genes = intersect(rownames(mmul.beta),subset(mmul.hsap.o2o,hsapiens_homolog_ensembl_gene  %in% gsub('\\.[0-9]*$','',rownames(hsap.beta)))$ensembl_gene_id)
+
+ortho.mmul = subset(mmul.hsap.o2o,ensembl_gene_id %in% ortho.genes)$ensembl_gene_id
+ortho.hsap = subset(mmul.hsap.o2o,ensembl_gene_id %in% ortho.genes)$hsapiens_homolog_ensembl_gene
+
+mmul.beta = mmul.beta[ortho.mmul,]
+mmul.lfsr = mmul.lfsr[ortho.mmul,]
+mmul.sbet = mmul.sbet[ortho.mmul,]
+
+rownames(hsap.beta) = rownames(hsap.sbet) = rownames(hsap.lfsr) = gsub('\\.[0-9]*$','',rownames(hsap.beta))
+hsap.beta = hsap.beta[ortho.hsap,]
+hsap.lfsr = hsap.lfsr[ortho.hsap,]
+hsap.sbet = hsap.sbet[ortho.hsap,]
+
+# Comparisons to make
+comparisons = c(
+  AMY = 'Brain - Amygdala',
+  ACCg = 'Brain - Anterior cingulate cortex (BA24)',
+  CN = 'Brain - Caudate (basal ganglia)',
+  dmPFC = 'Brain - Frontal Cortex (BA9)',
+  DG = 'Brain - Hippocampus',
+  CA3 = 'Brain - Hippocampus',
+  VMH = 'Brain - Hypothalamus',
+  Pu = 'Brain - Putamen (basal ganglia)'
+)
+
+orthologs = mmul.hsap.o2o
+rownames(orthologs) = orthologs$ensembl_gene_id
+orthologs = orthologs[ortho.mmul,]
+
+all.comparisons = do.call(rbind,mclapply(names(comparisons),function(i) {
+  data.frame(
+    gene=rownames(mmul.beta),
+    r1=i,
+    r2=comparisons[[i]],
+    c1 = orthologs$chromosome_name,
+    c2 = orthologs$hsapiens_homolog_chromosome,
+    s1 = c('autosome','sex')[as.integer(orthologs$chromosome_name %in% c('X','Y'))+1],
+    s2 = c('autosome','sex')[as.integer(orthologs$hsapiens_homolog_chromosome %in% c('X','Y'))+1],
+    s3 = c('nonY','Y')[as.integer(orthologs$chromosome_name %in% c('Y'))+1],
+    s4 = c('nonY','Y')[as.integer(orthologs$hsapiens_homolog_chromosome %in% c('Y'))+1],
+    beta.mmul=mmul.beta[,i],
+    beta.hsap=hsap.beta[,comparisons[[i]]],
+    sbet.mmul=mmul.sbet[,i],
+    sbet.hsap=hsap.sbet[,comparisons[[i]]],
+    lfsr.mmul=mmul.lfsr[,i],
+    lfsr.hsap=hsap.lfsr[,comparisons[[i]]]
+  )
+},mc.cores=24))
+
+library(egg)
+library(ggplot2)
+library(RColorBrewer)
+
+##############################
+# Plot without sex chromosomes (lfsr <0.05 in either)
+##############################
+
+this.data= subset(
+  all.comparisons,
+  (lfsr.mmul < 0.05 | lfsr.hsap < 0.05) &
+    s1 %in% 'autosome' & s2 %in% 'autosome')
+
+this.data$match = as.factor(ifelse(sign(this.data$beta.hsap) == sign(this.data$beta.mmul), 'yes', 'no'))
+l = c(-1,1)*with(this.data,max(abs(c(range(beta.mmul),range(beta.hsap)))))
+b = seq(round(l/5)*5)
+
+this.data$r1 = as.factor(this.data$r1)
+stats = NULL
+for (i in 1:length(levels(this.data$r1))){
+  datanow = subset(this.data, r1 == levels(this.data$r1)[i])
+  cor = cor.test(datanow$beta.mmul, datanow$beta.hsap, method = 'spearman')
+  print(levels(this.data$r1)[i])
+  stats$r1[i] = levels(this.data$r1)[i]
+  qcr = (sum(datanow$beta.mmul > 0 & datanow$beta.hsap > 0) + sum(datanow$beta.mmul < 0 & datanow$beta.hsap < 0) - sum(datanow$beta.mmul > 0 & datanow$beta.hsap < 0) - sum(datanow$beta.mmul < 0 & datanow$beta.hsap > 0)) / length(datanow$gene)
+  print(paste('qcr = ',qcr))
+  stats$qcr[i] = qcr
+  print(cor$estimate)
+  stats$rho[i] = cor$estimate
+  print(paste('p = ',cor$p.value))
+  stats$pval[i] = cor$p.value
+}
+stats = data.frame(stats)
+stats
+
+ggplot(data=this.data,aes(x=beta.mmul,y=beta.hsap,colour=factor(match))) +
+  geom_point(alpha=0.8) +
+  geom_hline(yintercept=0,size=0.1,linetype=2) +
+  geom_vline(xintercept=0,size=0.1,linetype=2) +
+  coord_equal() +
+  scale_color_manual(values=c('#ed1c24','#1b9e77')) +
+  scale_x_continuous(limits=c(-1,1),breaks=c(-1,0,1)) +
+  scale_y_continuous(limits=c(-1,1),breaks=c(-1,0,1)) +
+  theme_article() +
+  theme(axis.text = element_text(size=18),axis.title = element_text(size=18), strip.text = element_text(size=18)) +
+  theme(legend.position = 'none') +
+  theme(strip.background=element_blank()) +
+  xlab(expression(~italic(beta['rhesus']))) +
+  ylab(expression(~italic(beta['human']))) +
+  facet_wrap(~r1,nrow=2)
+
+##############################
+# Plot without Y chromosome (lfsr <0.05 in either)
+##############################
+
+this.data= subset(
+  all.comparisons,
+  (lfsr.mmul < 0.05 | lfsr.hsap < 0.05) &
+    s3 %in% 'nonY' & s4 %in% 'nonY')
+
+this.data$match = as.factor(ifelse(sign(this.data$beta.hsap) == sign(this.data$beta.mmul), 'yes', 'no'))
+l = c(-1,1)*with(this.data,max(abs(c(range(beta.mmul),range(beta.hsap)))))
+b = seq(round(l/5)*5)
+
+this.data$r1 = as.factor(this.data$r1)
+stats = NULL
+for (i in 1:length(levels(this.data$r1))){
+  datanow = subset(this.data, r1 == levels(this.data$r1)[i])
+  cor = cor.test(datanow$beta.mmul, datanow$beta.hsap, method = 'spearman')
+  print(levels(this.data$r1)[i])
+  stats$r1[i] = levels(this.data$r1)[i]
+  qcr = (sum(datanow$beta.mmul > 0 & datanow$beta.hsap > 0) + sum(datanow$beta.mmul < 0 & datanow$beta.hsap < 0) - sum(datanow$beta.mmul > 0 & datanow$beta.hsap < 0) - sum(datanow$beta.mmul < 0 & datanow$beta.hsap > 0)) / length(datanow$gene)
+  print(paste('qcr = ',qcr))
+  stats$qcr[i] = qcr
+  print(cor$estimate)
+  stats$rho[i] = cor$estimate
+  print(paste('p = ',cor$p.value))
+  stats$pval[i] = cor$p.value
+}
+stats = data.frame(stats)
+stats
+
+ggplot(data=this.data,aes(x=beta.mmul,y=beta.hsap)) +
+  geom_point(alpha=0.8,size=2.5,aes(colour=factor(match),shape=s1)) +
+  geom_hline(yintercept=0,size=0.1,linetype=2) +
+  geom_vline(xintercept=0,size=0.1,linetype=2) +
+  coord_equal() +
+  scale_color_manual(values=c('#ed1c24','#1b9e77')) +
+  scale_x_continuous(limits=c(-1,1),breaks=c(-1,0,1)) +
+  scale_y_continuous(limits=c(-1,1),breaks=c(-1,0,1)) +
+  theme_article() +
+  theme(axis.text = element_text(size=18),axis.title = element_text(size=18), strip.text = element_text(size=18)) +
+  theme(legend.position = 'none') +
+  theme(strip.background=element_blank()) +
+  xlab(expression(~italic(beta['rhesus']))) +
+  ylab(expression(~italic(beta['human']))) +
+  geom_smooth(method='lm',fullrange=TRUE,colour="black") +
+  facet_wrap(~r1,nrow=2)
+
+#######################
+## cell type enrichment comparison
+#######################
+
+hum = readRDS('checkpoints/human_sex_cell_types.rds')
+mac = readRDS('checkpoints/macaque_sex_cell_types.rds')
+
+plotdata = rbind(cbind(mac, species = "Macaque"), cbind(hum, species = "Human"))
+plotdata$group = paste(plotdata$species, plotdata$bias, sep = " ")
+
+ggplot(data=plotdata, aes(x=group, y=Proportion, fill=`Cell Type`)) + 
+  geom_bar(stat="identity",position="stack") + theme_classic() + 
+  ylab("Proportion") + scale_fill_brewer(palette='BrBG') +
+  theme(axis.text = element_text(size=18), 
+        axis.text.x = element_text(angle = 45, hjust=1),
+        axis.title = element_text(size=18), 
+        axis.title.x = element_blank(), 
+        legend.text = element_text(size=14), 
+        legend.title = element_text(size=14))
+
+ggplot(data=plotdata, aes(x=bias, y=Proportion, fill=`Cell Type`)) + 
+  geom_bar(stat="identity",position="stack") + theme_classic() + 
+  ylab("Proportion") + scale_fill_brewer(palette='BrBG') +
+  facet_wrap(~species, strip.position = "bottom", scales = "free_x") +
+  theme(panel.spacing = unit(0, "lines"), 
+        strip.background = element_blank(),
+        strip.placement = "outside") +
+  theme(axis.text = element_text(size=18), 
+        axis.title = element_text(size=18), 
+        axis.title.x = element_blank(), 
+        strip.text.x = element_text(size=18),
+        legend.text = element_text(size=14), 
+        legend.title = element_text(size=14))
+
+#######################
+## risk gene enrichment comparison
+#######################
+
+all.region.do.results.macaque = read.csv('checkpoints/manual_do_results_macaque.csv')
+all.region.do.results.gtex = read.csv('checkpoints/manual_do_results_human.csv')
+
+plot.do = rbind(cbind(all.region.do.results.macaque, species = "Macaque"), cbind(all.region.do.results.gtex, species = "Human"))
+plot.do$logp = -log10(plot.do$inc.kst.pval)
+plot.do = plot.do[order(plot.do$logp, decreasing = TRUE),]
+head(plot.do)
+
+plot_diseases = c('DOID:1059','DOID:12849','DOID:5419','DOID:3312','DOID:1094')
+plot.do = subset(plot.do, do_id %in% plot_diseases)
+plot.do$do_name = as.factor(plot.do$do_name)
+levels(plot.do$do_name) = c("ADHD","ASD","BPD","ID","SCZ")
+plot.do$do_name <- factor(plot.do$do_name, levels=c('BPD','ID','ADHD','ASD','SCZ'))
+plot.do
+
+cols = brewer.pal(10, 'BrBG')
+
+ggplot(plot.do, aes(x=do_name, y = logp, fill = species)) +
+  ylab("Adjusted P-value (-log10)") +
+  scale_fill_manual(values=c(cols[3],cols[8])) +
+  geom_bar(position="dodge", stat="identity", alpha = 0.8) +
+  theme_classic() +
+  coord_flip() +
+  theme(axis.text = element_text(size=18),
+        legend.position = "bottom", 
+        legend.title = element_blank(),
+        axis.title.x = element_text(size=18),
+        legend.text = element_text(size=18),
+        axis.title.y = element_blank()) 
+
+
+
+
+
+
+
+
+
