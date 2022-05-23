@@ -41,6 +41,8 @@ The following files are expected:
 
 * An animal social metrics file should be placed in `data/social_metrics.csv`
 
+* Results for an analysis of sex-biased gene expression in humans (GTEx v8) should be placed in ```data/gtex_mashr_results_sex.rds```
+
 # Pipeline
 
 ### Map reads with splice-aware aligner
